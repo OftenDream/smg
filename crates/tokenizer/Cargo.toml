@@ -37,6 +37,33 @@ minijinja-contrib = { version = "2.21", features = ["pycompat"] }
 rayon = "1.12"
 tiktoken-rs = "0.12"
 tokenizers = "0.23.1"
+# Optional prompt-encode fast path; see the `gigatoken` feature below.
+# Upstream project: https://github.com/marcelroed/gigatoken (Marcel Rød, MIT).
+# The URL below is a build-packaging mirror of upstream @ 0d9765f: 4 files /
+# 49 insertions only (pyo3/numpy made optional, nightly `portable_simd` gated
+# behind an off-by-default `simd` feature, unstable `profile-rustflags` key
+# dropped) — zero behavioral change, and every hunk is upstreamable. Consume
+# upstream directly once it ships as a library. Pinned by rev, never a branch:
+# the crate is not on crates.io and the encoder must stay byte-for-byte
+# reproducible across builds.
+gigatoken_rs = { package = "gigatoken", git = "https://github.com/lightseekorg/gigatoken", rev = "2cb7d44e99e194d263e961079b8d9f313f904911", default-features = false, optional = true }
+
+[features]
+default = []
+# Prompt-encode fast path. Routes ONLY `Encoder::encode`; decode, chat
+# templating and special-token handling stay on `tokenizers`, which is the only
+# backend with incremental decode. Guarded at load time by a parity self-check
+# that refuses to engage unless it reproduces HuggingFace exactly, so enabling
+# this can change latency but not tokens.
+gigatoken = ["dep:gigatoken_rs"]
+# NOTE: gigatoken's nightly-only `simd` feature is deliberately NOT exposed as a
+# cargo feature here. CI lints with `--all-features`, which would switch it on
+# and fail the stable build with E0554 (`#![feature]` on the stable channel) —
+# feature-gating cannot protect a nightly-only attribute from `--all-features`.
+# It also bought nothing to give up: those scanners live in
+# `gigatoken::bpe::sentencepiece`, our tiktoken-family vocabularies never reach
+# them, and it measured within noise (4.12ms vs 4.07ms on an 860KB prompt).
+# See GIGATOKEN.md if a sentencepiece model ever makes it worth revisiting.
 
 [dev-dependencies]
 criterion = "0.8"

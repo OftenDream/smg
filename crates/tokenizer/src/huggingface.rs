@@ -22,7 +22,9 @@ use crate::{
         load_chat_template_from_file, ChatTemplateContentFormat, ChatTemplateParams,
         ChatTemplateState, ThinkingKeyName, ThinkingToggle,
     },
+    encode_timing::{timed, EncodeTiming},
     encoders::{deepseek_v32, deepseek_v4},
+    gigatoken_encoder::{fast_path_requested, GigatokenEncoder},
     traits::{Decoder, Encoder, Encoding, SpecialTokens, TokenIdType, Tokenizer as TokenizerTrait},
 };
 
@@ -44,6 +46,10 @@ pub struct HuggingFaceTokenizer {
     eos_token_ids: Vec<TokenIdType>,
     /// Which renderer applies chat templates for this model.
     renderer: Renderer,
+    /// Optional gigatoken encode fast path; `None` unless opted in and proven
+    /// token-for-token identical at load time.
+    gigatoken: Option<GigatokenEncoder>,
+    encode_timing: EncodeTiming,
 }
 
 const QWEN2_PRETOKENIZE_REGEX: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
@@ -273,6 +279,12 @@ impl HuggingFaceTokenizer {
             .map(detect_renderer_from_config)
             .unwrap_or(Renderer::Jinja);
 
+        let gigatoken = if fast_path_requested() {
+            GigatokenEncoder::try_new(&tokenizer_path.to_string_lossy(), &tokenizer)
+        } else {
+            None
+        };
+
         Ok(HuggingFaceTokenizer {
             tokenizer,
             special_tokens,
@@ -281,6 +293,8 @@ impl HuggingFaceTokenizer {
             chat_template: ChatTemplateState::new(chat_template_str)?,
             eos_token_ids,
             renderer,
+            gigatoken,
+            encode_timing: EncodeTiming::from_env(),
         })
     }
 
@@ -349,6 +363,9 @@ impl HuggingFaceTokenizer {
             chat_template: ChatTemplateState::empty(),
             eos_token_ids: Vec::new(), // No directory path in from_tokenizer
             renderer: Renderer::Jinja,
+            // No file path here, so the gigatoken vocabulary cannot be loaded.
+            gigatoken: None,
+            encode_timing: EncodeTiming::from_env(),
         }
     }
 
@@ -476,13 +493,34 @@ struct TokenizerConfigResult {
 
 impl Encoder for HuggingFaceTokenizer {
     fn encode(&self, input: &str, add_special_tokens: bool) -> Result<Encoding> {
-        self.tokenizer
-            .encode(input, add_special_tokens)
-            .map_err(|e| Error::msg(format!("Encoding failed: {e}")))
-            .map(|encoding| Encoding::Hf(Box::new(encoding)))
+        if let Some(giga) = &self.gigatoken {
+            // `None` = the fast path could not serve this call safely (e.g.
+            // poisoned pool slots); fall through to HuggingFace.
+            let ids = timed(&self.encode_timing, "gigatoken", input.len(), || {
+                giga.encode(input)
+            });
+            if let Some(ids) = ids {
+                return Ok(Encoding::Plain(ids));
+            }
+        }
+        timed(&self.encode_timing, "huggingface", input.len(), || {
+            self.tokenizer
+                .encode(input, add_special_tokens)
+                .map_err(|e| Error::msg(format!("Encoding failed: {e}")))
+                .map(|encoding| Encoding::Hf(Box::new(encoding)))
+        })
     }
 
     fn encode_batch(&self, inputs: &[&str], add_special_tokens: bool) -> Result<Vec<Encoding>> {
+        if let Some(giga) = &self.gigatoken {
+            let total: usize = inputs.iter().map(|s| s.len()).sum();
+            let rows = timed(&self.encode_timing, "gigatoken-batch", total, || {
+                giga.encode_batch(inputs)
+            });
+            if let Some(rows) = rows {
+                return Ok(rows.into_iter().map(Encoding::Plain).collect());
+            }
+        }
         self.tokenizer
             .encode_batch(inputs.to_vec(), add_special_tokens)
             .map_err(|e| Error::msg(format!("Batch encoding failed: {e}")))

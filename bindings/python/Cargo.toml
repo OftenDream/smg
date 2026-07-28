@@ -36,6 +36,9 @@ workspace = true
 default = ["pyo3/extension-module"]
 opencv-video = ["smg/opencv-video"]
 vendored-openssl = ["smg/vendored-openssl"]
+# Optional prompt-encode fast path; forwards to smg/gigatoken. Build with
+# `cargo build --release -p smg-python --features gigatoken`.
+gigatoken = ["smg/gigatoken"]
 
 [profile.ci]
 inherits = "release"

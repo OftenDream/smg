@@ -23,6 +23,11 @@ mm-rdma = ["smg-mm-rdma/nixl"]
 
 vendored-openssl = ["openssl/vendored"]
 
+# Optional prompt-encode fast path. Forwards to llm-tokenizer/gigatoken; see
+# that crate for the safety contract (load-time parity self-check, falls back
+# to HuggingFace whenever equivalence cannot be proven).
+gigatoken = ["llm-tokenizer/gigatoken"]
+
 [lib]
 name = "smg"
 crate-type = ["rlib"]

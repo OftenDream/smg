@@ -3,9 +3,17 @@ use std::sync::Arc;
 use anyhow::Result;
 
 pub mod cache;
+mod encode_timing;
 pub mod encoders;
 pub mod eos;
 pub mod factory;
+/// Optional gigatoken encode fast path. Off by default; the stub keeps the
+/// call sites in `huggingface.rs` free of `cfg` branches.
+#[cfg(feature = "gigatoken")]
+mod gigatoken_encoder;
+#[cfg(not(feature = "gigatoken"))]
+#[path = "gigatoken_encoder_disabled.rs"]
+mod gigatoken_encoder;
 pub mod hub;
 pub(crate) mod json_dumps;
 pub mod mock;
